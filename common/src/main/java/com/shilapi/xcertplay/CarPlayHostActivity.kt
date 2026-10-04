@@ -973,8 +973,20 @@ class CarPlayHostActivity : ComponentActivity() {
             text = if (wirelessEnabled) getString(R.string.keep_your_iphone_nearby_with_bluetooth_and_wi_fi_on_allow)
                 else getString(R.string.use_a_usb_data_cable_and_unlock_your_iphone_allow_trust_an)
             textSize = 17f; gravity = Gravity.CENTER; setTextColor(Color.rgb(168, 182, 202))
-            setPadding(0, dp(14), 0, dp(24))
+            setPadding(0, dp(14), 0, dp(14))
         })
+        statusScrollView = ScrollView(this).apply {
+            addView(
+                TextView(this@CarPlayHostActivity).apply {
+                    textSize = 12f
+                    setTextColor(Color.rgb(148, 166, 196))
+                    typeface = Typeface.MONOSPACE
+                    setPadding(dp(4), dp(4), dp(4), dp(4))
+                }.also { statusView = it },
+                FrameLayout.LayoutParams(-1, -2),
+            )
+        }
+        panel.addView(statusScrollView, LinearLayout.LayoutParams(-1, dp(190)).apply { bottomMargin = dp(14) })
         panel.addView(Button(this).apply {
             text = getString(R.string.reset_carplay_wi_fi); isAllCaps = false; textSize = 18f
             visibility = View.GONE
@@ -3853,8 +3865,9 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun updateDebugOverlays() {
-        statusScrollView?.visibility = View.GONE
-        connectionPanel?.visibility = if (activeScreenStreamTypes.isEmpty()) View.VISIBLE else View.GONE
+        val streamsActive = activeScreenStreamTypes.isNotEmpty()
+        statusScrollView?.visibility = if (streamsActive) View.GONE else View.VISIBLE
+        connectionPanel?.visibility = if (streamsActive) View.GONE else View.VISIBLE
     }
 
     private fun friendlyStage(message: String): String = when {
@@ -3877,7 +3890,12 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun appendLog(message: String) {
         val safe = DiagnosticRedactor.redact(message) ?: return
-        sessionLog?.append(formattedLogLine(safe, System.currentTimeMillis()))
+        val line = formattedLogLine(safe, System.currentTimeMillis())
+        sessionLog?.append(line)
+        runOnUiThread {
+            logLines.addLast(LogEntry(System.currentTimeMillis(), line))
+            refreshLogView(System.currentTimeMillis())
+        }
     }
 
     private fun appendFileLog(message: String) {

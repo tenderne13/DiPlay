@@ -2126,8 +2126,13 @@ class DiPlayActivity : ComponentActivity() {
                             }.onFailure { toast(getString(R.string.report_saved_open_it_from_your_file_manager_to_share_it)) }
                         }.show()
                 } else {
+                    val failureDetail = result.exceptionOrNull()
+                        ?.let { "${it.javaClass.simpleName}: ${it.message}" } ?: "unknown error"
                     AlertDialog.Builder(this).setTitle(getString(R.string.could_not_save_the_report))
-                        .setMessage(getString(R.string.check_that_storage_is_available_or_choose_another_save_loc))
+                        .setMessage(
+                            getString(R.string.check_that_storage_is_available_or_choose_another_save_loc) +
+                                "\n\n$failureDetail",
+                        )
                         .setPositiveButton(getString(R.string.choose_location)) { _, _ -> chooseReportDestination() }
                         .setNegativeButton(getString(R.string.close), null).show()
                 }
