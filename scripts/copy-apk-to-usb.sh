@@ -40,6 +40,17 @@ if [[ -z "$DEST" ]]; then
   fi
 fi
 
+if [[ -d "$DEST" && ! -w "$DEST" ]]; then
+  # FAT drives hot-unplugged on the car come back with a dirty flag and mount read-only.
+  DEVICE=$(mount | grep " on ${DEST} " | sed -E 's|^(/dev/[^ ]+) on .*|\1|')
+  if [[ -n "$DEVICE" ]]; then
+    echo "目标只读，重新挂载: ${DEST} (${DEVICE})"
+    diskutil unmount "$DEST" >/dev/null 2>&1 || true
+    sleep 1
+    diskutil mount "${DEVICE##*/}" >/dev/null 2>&1 || true
+  fi
+fi
+
 if [[ ! -d "$DEST" || ! -w "$DEST" ]]; then
   echo "目标不可写: ${DEST}（U 盘是否已挂载？ls /Volumes 查看）" >&2
   exit 1
