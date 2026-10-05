@@ -131,7 +131,7 @@ adb devices
 
 ## 七、其他要点
 
-- **git 状态**：所有排障改动均未提交（工作区里还有上轮会话的日志面板等改动），提交前先 `git status` 确认范围。
+- **git 状态**：已全部提交并推送到 fork（origin=tenderne13/DiPlay）。main = `b47d783`（批次 A `21fb2c6` + 比亚迪支持 `b47d783`）；**给上游提 PR 用 `perf/low-end-head-units` 分支（仅含批次 A，未推送）**。
 - 仓库 remote 是 fork `tenderne13/DiPlay`，上游 `shihabal3amri/DiPlay`；`gh` CLI 未安装，查上游 issue 用 `https://api.github.com/...`（WebFetch 可用）。
 - 用户手机（Redmi，adb 调试）与车机（无 ADB）是两台设备，勿混淆。
 - 用户在国内网络环境，构建下载类命令注意重试；细节见用户记忆 `user-dev-environment.md`。
