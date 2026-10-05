@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.pm.ProviderInfo
 import android.database.Cursor
 import android.net.Uri
+import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import org.junit.Assert.*
@@ -77,6 +78,58 @@ class DiagnosticExportStoreTest {
             DiagnosticExportStore.write(resolver, provider.uri, "report")
         }
         assertFalse(provider.deleted)
+    }
+
+    @Test
+    @Config(sdk = [28], manifest = Config.NONE)
+    fun android9SavesUtf8ReportIntoAppExternalDiPlayDirectory() {
+        val context = RuntimeEnvironment.getApplication()
+        val report = "DiPlay · diagnostic report\n无线: 多播不通\n"
+        val saved = DiagnosticExportStore.saveToAppStorage(context, "DiPlay-test.txt", report)
+        assertEquals(report, saved.readText())
+        assertEquals("DiPlay", saved.parentFile!!.name)
+        assertEquals(context.getExternalFilesDir(null)!!.absolutePath, saved.parentFile!!.parentFile!!.absolutePath)
+    }
+
+    @Test
+    @Config(sdk = [28], manifest = Config.NONE)
+    fun appStorageFailurePropagatesAndKeepsTheBlockingFileUntouched() {
+        val context = RuntimeEnvironment.getApplication()
+        val base = context.getExternalFilesDir(null)!!
+        base.mkdirs()
+        val blocker = File(base, "DiPlay")
+        blocker.createNewFile()
+        blocker.writeText("not a directory")
+        assertThrows(IOException::class.java) {
+            DiagnosticExportStore.saveToAppStorage(context, "DiPlay-test.txt", "report")
+        }
+        assertEquals("not a directory", blocker.readText())
+        assertFalse(File(base, "DiPlay/DiPlay-test.txt").exists())
+    }
+
+    @Test
+    @Config(sdk = [28], manifest = Config.NONE)
+    fun android9SavesReportIntoPublicDownloadsDiPlayDirectory() {
+        val report = "DiPlay · diagnostic report\n音乐: 欠载 0\n"
+        val saved = DiagnosticExportStore.saveToPublicDownloads("DiPlay-test.txt", report)
+        assertEquals(report, saved.readText())
+        assertEquals("DiPlay", saved.parentFile!!.name)
+        assertEquals(Environment.DIRECTORY_DOWNLOADS, saved.parentFile!!.parentFile!!.name)
+    }
+
+    @Test
+    @Config(sdk = [28], manifest = Config.NONE)
+    fun publicDownloadsFailurePropagatesAndKeepsTheBlockingFileUntouched() {
+        val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        downloads.mkdirs()
+        val blocker = File(downloads, "DiPlay")
+        blocker.createNewFile()
+        blocker.writeText("not a directory")
+        assertThrows(IOException::class.java) {
+            DiagnosticExportStore.saveToPublicDownloads("DiPlay-test.txt", "report")
+        }
+        assertEquals("not a directory", blocker.readText())
+        assertFalse(File(downloads, "DiPlay/DiPlay-test.txt").exists())
     }
 
     private class DownloadsProvider(val file: File) : ContentProvider() {

@@ -6,6 +6,7 @@ import android.Manifest
 import android.app.AlertDialog
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -145,6 +146,10 @@ class DiPlayActivity : ComponentActivity() {
     }
     private val export = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         if (uri != null) exportDiagnostics(uri)
+    }
+    private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        // Either way the report is still written: denial keeps the app-private directory.
+        exportDiagnostics()
     }
 
     private var languagePreferenceAtCreate = AppLocale.SYSTEM
@@ -397,7 +402,8 @@ class DiPlayActivity : ComponentActivity() {
         section(content, getString(R.string.diagnostics), R.drawable.ic_dp_diagnostics) { card ->
             exportButton = button(if (exportInProgress) getString(R.string.saving_report) else getString(R.string.save_diagnostic_report), false) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) exportDiagnostics()
-                else chooseReportDestination()
+                else if (hasStoragePermission()) exportDiagnostics()
+                else storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }.apply { isEnabled = !exportInProgress }
             card.addView(exportButton, matchButton(10, 60))
             card.addView(button(getString(R.string.choose_save_location), false) { chooseReportDestination() }, matchButton(10, 60))
@@ -2037,6 +2043,9 @@ class DiPlayActivity : ComponentActivity() {
         }
     }
 
+    private fun hasStoragePermission(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ||
+        checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
     private fun exportDiagnostics(uri: Uri? = null) {
         if (exportInProgress) return
         exportInProgress = true
@@ -2102,21 +2111,35 @@ class DiPlayActivity : ComponentActivity() {
                         }
                     }
                 }
-                if (uri != null) { DiagnosticExportStore.write(appContext.contentResolver, uri, report); uri }
-                else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    DiagnosticExportStore.saveToDownloads(appContext.contentResolver, fileName, report)
-                } else error("A save location is required")
+                when {
+                    uri != null -> { DiagnosticExportStore.write(appContext.contentResolver, uri, report); uri to null }
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                        DiagnosticExportStore.saveToDownloads(appContext.contentResolver, fileName, report) to "Downloads/DiPlay/$fileName"
+                    else -> {
+                        // Head units without a document picker still get the report. Public
+                        // Downloads is visible to any file manager; the app-private directory
+                        // (used without the storage grant) may not be browsable on OEM builds.
+                        val file = if (hasStoragePermission()) {
+                            DiagnosticExportStore.saveToPublicDownloads(fileName, report)
+                        } else {
+                            DiagnosticExportStore.saveToAppStorage(appContext, fileName, report)
+                        }
+                        Uri.fromFile(file) to file.absolutePath
+                    }
+                }
             }
             runOnUiThread {
                 exportInProgress = false
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 exportButton?.apply { isEnabled = true; text = getString(R.string.save_diagnostic_report) }
                 if (result.isSuccess) {
-                    val savedUri = result.getOrThrow()
-                    AlertDialog.Builder(this).setTitle(getString(R.string.diagnostic_report_saved))
-                        .setMessage(if (uri == null) "Downloads/DiPlay/$fileName" else getString(R.string.your_report_was_saved_to_the_selected_location))
+                    val (savedUri, location) = result.getOrThrow()
+                    val dialog = AlertDialog.Builder(this).setTitle(getString(R.string.diagnostic_report_saved))
+                        .setMessage(location ?: getString(R.string.your_report_was_saved_to_the_selected_location))
                         .setPositiveButton(getString(R.string.done), null)
-                        .setNeutralButton(getString(R.string.share)) { _, _ ->
+                    // file:// targets crash ACTION_SEND on modern API levels; only content URIs are shareable.
+                    if (savedUri.scheme == ContentResolver.SCHEME_CONTENT) {
+                        dialog.setNeutralButton(getString(R.string.share)) { _, _ ->
                             runCatching {
                                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                                     type = "text/plain"; putExtra(Intent.EXTRA_STREAM, savedUri)
@@ -2124,7 +2147,9 @@ class DiPlayActivity : ComponentActivity() {
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 }, getString(R.string.share_diagnostic_report)))
                             }.onFailure { toast(getString(R.string.report_saved_open_it_from_your_file_manager_to_share_it)) }
-                        }.show()
+                        }
+                    }
+                    dialog.show()
                 } else {
                     val failureDetail = result.exceptionOrNull()
                         ?.let { "${it.javaClass.simpleName}: ${it.message}" } ?: "unknown error"

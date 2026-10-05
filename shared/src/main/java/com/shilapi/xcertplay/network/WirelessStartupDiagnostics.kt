@@ -96,8 +96,9 @@ internal class WirelessStartupDiagnostics(
 
     private fun emitSnapshot(snapshot: String, cached: Boolean = false) {
         // The report redactor caps each log line at 700 characters. Never append the kernel
-        // counters to the already detailed startup/interface/P2P/Bonjour state line.
-        snapshot.lineSequence().filter { it.isNotBlank() }.take(4).forEach { line ->
+        // counters or the mDNS probe counts to the already detailed startup/interface/P2P/Bonjour
+        // state line.
+        snapshot.lineSequence().filter { it.isNotBlank() }.take(5).forEach { line ->
             emit("wireless snapshot${if (cached) " cached=true" else ""} $line")
         }
     }

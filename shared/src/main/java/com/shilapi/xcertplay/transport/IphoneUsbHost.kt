@@ -68,8 +68,100 @@ class IphoneUsbHost(
     private val usbManager: UsbManager,
     private val matcher: IphoneUsbMatcher,
     private val permissionAction: String = "${context.packageName}.IPHONE_USB_PERMISSION",
+    private val onDiagnostic: (String) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
+
+    private class EarlyClaim(
+        val device: UsbDevice,
+        val connection: UsbDeviceConnection,
+        val usbMux: UsbInterface,
+    )
+
+    private val earlyClaimLock = Any()
+    private var earlyClaim: EarlyClaim? = null
+    @Volatile private var earlyClaimClosed = false
+
+    /**
+     * Starts racing for the USBMUX interface the moment a re-enumerated iPhone appears. On BYD
+     * units a system daemon also claims the device; the first userspace claim wins and a later
+     * forced claim cannot steal it, so claiming inside the attach broadcast beats the daemon.
+     * The held connection is reused by [openIap2UsbSessionAsync] when the device matches.
+     */
+    fun startEarlyClaim(executor: Executor): Closeable {
+        val receiver = registerAttachReceiver { device ->
+            executor.execute {
+                if (!earlyClaimClosed) attemptEarlyClaim(device)
+            }
+        }
+        return Closeable {
+            earlyClaimClosed = true
+            receiver.close()
+            clearEarlyClaim()
+        }
+    }
+
+    private fun attemptEarlyClaim(device: UsbDevice) {
+        if (earlyClaimClosed) return
+        if (!usbManager.hasPermission(device)) {
+            onDiagnostic("usbmux early-claim skipped: USB permission not granted yet")
+            return
+        }
+        val configuration = IphoneCarPlayConfiguration.find(device)
+        if (configuration == null) {
+            onDiagnostic("usbmux early-claim skipped: no CarPlay configuration on device")
+            return
+        }
+        val usbMux = IphoneCarPlayConfiguration.usbMuxInterface(configuration)
+        if (usbMux == null) {
+            onDiagnostic("usbmux early-claim skipped: no USBMUX interface")
+            return
+        }
+        val connection = usbManager.openDevice(device)
+        if (connection == null) {
+            onDiagnostic("usbmux early-claim skipped: UsbManager could not open the iPhone")
+            return
+        }
+        try {
+            if (!connection.setConfiguration(configuration)) {
+                onDiagnostic("usbmux early-claim setConfiguration reported failure; claiming anyway")
+            }
+            val claimed = NcmUsbBridge.claimInterfaceWithRetry(
+                claim = { connection.claimInterface(usbMux, true) },
+                onAttempt = { attempt, ok ->
+                    onDiagnostic("usbmux early-claim iface=${usbMux.id} attempt=$attempt ok=$ok")
+                },
+                attempts = 3,
+                delayMillis = 200,
+            )
+            if (!claimed) {
+                onDiagnostic("usbmux early-claim failed")
+                connection.close()
+                return
+            }
+            synchronized(earlyClaimLock) {
+                earlyClaim?.connection?.let { runCatching { it.close() } }
+                earlyClaim = EarlyClaim(device, connection, usbMux)
+            }
+            onDiagnostic("usbmux early-claim held")
+        } catch (error: RuntimeException) {
+            onDiagnostic("usbmux early-claim error failureClass=${error.javaClass.simpleName}")
+            runCatching { connection.close() }
+        }
+    }
+
+    private fun takeEarlyClaim(device: UsbDevice): EarlyClaim? = synchronized(earlyClaimLock) {
+        val claim = earlyClaim
+        if (claim?.device == device) earlyClaim = null
+        claim
+    }
+
+    private fun clearEarlyClaim() {
+        val claim = synchronized(earlyClaimLock) {
+            earlyClaim.also { earlyClaim = null }
+        }
+        runCatching { claim?.connection?.close() }
+    }
 
     sealed class PermissionRequest {
         data class AlreadyGranted(val device: UsbDevice) : PermissionRequest()
@@ -235,6 +327,22 @@ class IphoneUsbHost(
         if (!usbManager.hasPermission(device)) {
             throw IphoneUsbException.PermissionDenied("USB permission has not been granted")
         }
+        val early = takeEarlyClaim(device)
+        if (early != null) {
+            return try {
+                val configuration = IphoneCarPlayConfiguration.find(device)
+                    ?: throw IphoneUsbException.Protocol(
+                        "Re-enumerated iPhone exposes no USBMUX CarPlay configuration",
+                    )
+                val endpoints = IphoneCarPlayConfiguration.usbMuxEndpoints(early.usbMux)
+                    ?: throw IphoneUsbException.Protocol("USBMUX interface exposes no bulk endpoint pair")
+                onDiagnostic("usbmux using early claim iface=${early.usbMux.id}")
+                Iap2UsbSession(early.connection, endpoints.first, endpoints.second)
+            } catch (error: Throwable) {
+                runCatching { early.connection.close() }
+                throw error
+            }
+        }
         val connection = usbManager.openDevice(device)
             ?: throw IphoneUsbException.DeviceUnavailable("UsbManager could not open the iPhone")
         var claimedInterface: UsbInterface? = null
@@ -261,8 +369,14 @@ class IphoneUsbHost(
                     "out=${describeUsbEndpoint(endpoints.first)} " +
                     "in=${describeUsbEndpoint(endpoints.second)}",
             )
-            if (!connection.claimInterface(usbMux, true)) {
-                throw IphoneUsbException.DeviceUnavailable("Android could not claim USBMUX interface 1")
+            val usbMuxClaimed = NcmUsbBridge.claimInterfaceWithRetry(
+                claim = { connection.claimInterface(usbMux, true) },
+                onAttempt = { attempt, ok ->
+                    onDiagnostic("usbmux claim iface=${usbMux.id} attempt=$attempt ok=$ok")
+                },
+            )
+            if (!usbMuxClaimed) {
+                throw IphoneUsbException.DeviceUnavailable("Android could not claim USBMUX interface 1 after 5 attempts")
             }
             claimedInterface = usbMux
             return Iap2UsbSession(connection, endpoints.first, endpoints.second)

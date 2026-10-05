@@ -2,11 +2,13 @@ package com.shilapi.xcertplay
 
 import android.content.ContentResolver
 import android.content.ContentValues
+import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.annotation.RequiresApi
+import java.io.File
 import java.io.IOException
 
 /** Saves an app-owned report without depending on an OEM's document-picker activity. */
@@ -39,5 +41,36 @@ internal object DiagnosticExportStore {
         val stream = resolver.openOutputStream(uri, "wt")
             ?: throw IOException("Report destination is unavailable")
         stream.bufferedWriter(Charsets.UTF_8).use { it.write(report) }
+    }
+
+    /**
+     * Pre-Android 10 path for head units without a document picker: the app-specific
+     * external directory needs no permission, but some OEM file managers cannot reach it.
+     */
+    fun saveToAppStorage(context: Context, fileName: String, report: String): File {
+        val base = context.getExternalFilesDir(null)
+            ?: throw IOException("External app storage is unavailable")
+        return saveToDirectory(base, fileName, report)
+    }
+
+    /**
+     * Pre-Android 10 path reachable by any file manager. Requires WRITE_EXTERNAL_STORAGE,
+     * which the app only requests on API 28 and below.
+     */
+    @Suppress("DEPRECATION")
+    fun saveToPublicDownloads(fileName: String, report: String): File =
+        saveToDirectory(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName, report)
+
+    private fun saveToDirectory(base: File, fileName: String, report: String): File {
+        val dir = File(base, "DiPlay")
+        if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Could not create ${dir.absolutePath}")
+        val target = File(dir, fileName)
+        try {
+            target.writeText(report, Charsets.UTF_8)
+        } catch (error: Exception) {
+            runCatching { target.delete() }
+            throw error
+        }
+        return target
     }
 }

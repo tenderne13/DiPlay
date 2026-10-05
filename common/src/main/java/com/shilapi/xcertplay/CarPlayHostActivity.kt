@@ -3906,7 +3906,8 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun appendLog(message: String) {
         val safe = DiagnosticRedactor.redact(message) ?: return
-        val line = formattedLogLine(safe, System.currentTimeMillis())
+        val tag = ConnectionLogChineseTags.tag(safe)
+        val line = formattedLogLine(if (tag != null) "$tag $safe" else safe, System.currentTimeMillis())
         // Late lines from a dying controller can arrive after onDestroy shut the writer down.
         runCatching { sessionLogExecutor.execute { sessionLog?.append(line) } }
         runOnUiThread {

@@ -47,6 +47,7 @@ import com.shilapi.xcertplay.network.WifiP2pGroupManager
 import com.shilapi.xcertplay.network.WirelessHotspotInfo
 import com.shilapi.xcertplay.network.WirelessHotspotBackend
 import com.shilapi.xcertplay.network.WirelessHotspotManager
+import com.shilapi.xcertplay.network.ApMdnsTrafficProbe
 import com.shilapi.xcertplay.network.WirelessInterfaceDiagnostics
 import com.shilapi.xcertplay.network.WirelessReceiveDiagnostics
 import com.shilapi.xcertplay.network.WirelessStartupDiagnostics
@@ -179,6 +180,7 @@ class CarPlayController(
         } else {
             IphoneUsbMatcher.appleVendor()
         },
+        onDiagnostic = ::debugLog,
     )
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val touchExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -228,6 +230,7 @@ class CarPlayController(
     @Volatile private var hotspot: WirelessHotspotManager? = null
     @Volatile private var bonjour: CarPlayBonjour? = null
     @Volatile private var wirelessDiagnostics: WirelessStartupDiagnostics? = null
+    @Volatile private var wirelessMdnsProbe: ApMdnsTrafficProbe? = null
     @Volatile private var bluetoothSocket: BluetoothSocket? = null
     @Volatile private var bluetoothStream: BluetoothRfcommDuplexStream? = null
     @Volatile private var wirelessTunnelChannel: Iap2Session? = null
@@ -243,6 +246,7 @@ class CarPlayController(
 
     private var permissionCloseable: Closeable? = null
     private var attachCloseable: Closeable? = null
+    private var earlyClaimHandle: Closeable? = null
     private var ch341PermissionCloseable: Closeable? = null
     private var vpnLatch = CountDownLatch(1)
     private val teardownComplete = CountDownLatch(1)
@@ -980,12 +984,17 @@ class CarPlayController(
             )
             var startedBonjour: CarPlayBonjour? = null
             val receiveDiagnostics = WirelessReceiveDiagnostics(hotspotInfo.interfaceName)
+            val mdnsProbe = ApMdnsTrafficProbe(hotspotInfo.interfaceName)
+            wirelessMdnsProbe = mdnsProbe
             val diagnostics = WirelessStartupDiagnostics(
                 sample = {
                     "${WirelessInterfaceDiagnostics.snapshot(hotspotInfo.interfaceName)} " +
+                        "apFamily=${if (hostAddress is Inet6Address) "IPv6" else "IPv4"} " +
+                        "apIface=${hotspotInfo.interfaceName ?: "unknown"} " +
                         "${startedHotspot?.connectionDiagnosticSnapshot() ?: "association=unknown"} " +
                         (startedBonjour?.diagnosticSnapshot() ?: "bonjour=not_started") + "\n" +
-                        receiveDiagnostics.snapshot()
+                        receiveDiagnostics.snapshot() + "\n" +
+                        mdnsProbe.snapshot()
                 },
                 log = { message -> if (!isStaleWirelessRun(generation)) debugLog(message) },
             )
@@ -1423,6 +1432,11 @@ class CarPlayController(
         availabilityPollGeneration.incrementAndGet()
         phase = Phase.IPHONE
         reenumerationAttempts = 0
+        if (earlyClaimHandle == null) {
+            // Register for the whole wired session: a re-attaching iPhone can appear in any
+            // retry round, not just right after a vendor-request re-enumeration.
+            earlyClaimHandle = iphoneHost.startEarlyClaim(executor)
+        }
         onStatus(CarPlayStatus.DiscoveringIphone)
         checkIphoneAvailability()
     }
@@ -1988,6 +2002,9 @@ class CarPlayController(
         val diagnostics = wirelessDiagnostics
         wirelessDiagnostics = null
         diagnostics?.close()
+        val mdnsProbe = wirelessMdnsProbe
+        wirelessMdnsProbe = null
+        mdnsProbe?.close()
         wirelessConnectionProof.clear()
         media.setIapTunnelHandler(null)
         val activeTunnel = wirelessTunnelChannel
@@ -2192,7 +2209,7 @@ class CarPlayController(
     }
 
     private fun closeReceivers() {
-        listOfNotNull(permissionCloseable, attachCloseable, ch341PermissionCloseable).forEach {
+        listOfNotNull(permissionCloseable, attachCloseable, earlyClaimHandle, ch341PermissionCloseable).forEach {
             try {
                 it.close()
             } catch (_: Exception) {
@@ -2201,6 +2218,7 @@ class CarPlayController(
         }
         permissionCloseable = null
         attachCloseable = null
+        earlyClaimHandle = null
         ch341PermissionCloseable = null
     }
 

@@ -18,6 +18,7 @@ The report includes:
 | `airplay control request/response` | Fixed method/route category, byte counts and response status for protocol negotiation. Payloads, headers, query strings and unknown path values are omitted. Frequent feedback/command traffic is excluded. |
 | `iap2 availability` | Decoded wired/wireless/theme availability flags, without transport identifiers. Malformed metadata is logged without changing the existing reply behavior. |
 | `sessionActive`, `waitingFor` | Whether AirPlay established a session and the next startup milestone still missing. |
+| `apMdns` | Passive count of mDNS multicast (224.0.0.251) datagrams arriving on the hotspot interface, split into total `packets` and `foreign` (source not one of the interface's own addresses). A non-zero `foreign` count proves another station's Bonjour traffic reaches Android user space; a persistent zero leaves Wi-Fi association and multicast delivery in question. No packet content, names or addresses are exported. |
 
 ## Interpreting an incomplete connection
 

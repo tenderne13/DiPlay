@@ -296,6 +296,59 @@ class NcmUsbBridge internal constructor(
         private const val MAX_QUEUED_FRAMES = 256
         private const val MAX_QUEUED_BYTES = 1 shl 20
         private const val NANOS_PER_MILLISECOND = 1_000_000L
+        private const val CLAIM_ATTEMPTS = 5
+
+        /**
+         * Claims a USB interface with bounded retries. A concurrent system daemon can hold the
+         * interface with its own file descriptor (observed on DiLink units); a forced claim cannot
+         * detach another process, but the daemon's hold is intermittent, so retrying after a short
+         * delay wins the race.
+         */
+        internal fun claimInterfaceWithRetry(
+            claim: () -> Boolean,
+            onAttempt: (Int, Boolean) -> Unit = { _, _ -> },
+            attempts: Int = 5,
+            delayMillis: Long = 500,
+            sleep: (Long) -> Unit = { Thread.sleep(it) },
+        ): Boolean {
+            require(attempts > 0) { "attempts must be positive" }
+            require(delayMillis >= 0) { "delayMillis must not be negative" }
+            repeat(attempts) { attempt ->
+                val ok = claim()
+                onAttempt(attempt + 1, ok)
+                if (ok) return true
+                if (attempt + 1 >= attempts) return false
+                sleep(delayMillis)
+            }
+            return false
+        }
+
+        /**
+         * Selects the data alternate setting with bounded retries. A concurrent system daemon can
+         * force-claim the interface between claim and setInterface (observed on DiLink units), and
+         * the kernel may keep the interface transient right after a forced claim; re-claiming and
+         * retrying once the transient state settles addresses both.
+         */
+        internal fun selectDataAlternateSetting(
+            select: () -> Boolean,
+            reclaim: () -> Boolean,
+            onAttempt: (Int, Boolean) -> Unit = { _, _ -> },
+            attempts: Int = 3,
+            delayMillis: Long = 300,
+            sleep: (Long) -> Unit = { Thread.sleep(it) },
+        ): Boolean {
+            require(attempts > 0) { "attempts must be positive" }
+            require(delayMillis >= 0) { "delayMillis must not be negative" }
+            repeat(attempts) { attempt ->
+                val ok = select()
+                onAttempt(attempt + 1, ok)
+                if (ok) return true
+                if (attempt + 1 >= attempts) return false
+                runCatching { reclaim() }
+                sleep(delayMillis)
+            }
+            return false
+        }
 
         /** Claims and activates the NCM control/data interfaces; owns the connection on success. */
         fun open(connection: UsbDeviceConnection, function: NcmFunctionDiscovery.NcmFunction): NcmUsbBridge {
@@ -310,36 +363,51 @@ class NcmUsbBridge internal constructor(
                 // same interface id, so it must be claimed once and switched with setInterface.
                 val sameInterface = function.control.id == function.data.id
                 val first = if (sameInterface) function.data else function.control
-                val firstClaimed = connection.claimInterface(first, true)
-                Log.i(
-                    IphoneCarPlayConfiguration.TAG,
-                    "claim iface=${first.id}/${first.alternateSetting} class=${first.interfaceClass}" +
-                        " subclass=${first.interfaceSubclass} proto=${first.interfaceProtocol} ok=$firstClaimed",
+                val firstClaimed = claimInterfaceWithRetry(
+                    claim = { connection.claimInterface(first, true) },
+                    onAttempt = { attempt, ok ->
+                        Log.i(
+                            IphoneCarPlayConfiguration.TAG,
+                            "claim iface=${first.id}/${first.alternateSetting} class=${first.interfaceClass}" +
+                                " subclass=${first.interfaceSubclass} proto=${first.interfaceProtocol}" +
+                                " attempt=$attempt ok=$ok",
+                        )
+                    },
                 )
                 if (!firstClaimed) {
                     throw IphoneUsbException.DeviceUnavailable(
-                        "Android could not claim the NCM interface ${first.id}",
+                        "Android could not claim the NCM interface ${first.id} after ${CLAIM_ATTEMPTS} attempts",
                     )
                 }
                 claimed.add(first)
                 if (!sameInterface) {
-                    val dataClaimed = connection.claimInterface(function.data, true)
-                    Log.i(
-                        IphoneCarPlayConfiguration.TAG,
-                        "claim iface=${function.data.id}/${function.data.alternateSetting}" +
-                            " class=${function.data.interfaceClass} ok=$dataClaimed",
+                    val dataClaimed = claimInterfaceWithRetry(
+                        claim = { connection.claimInterface(function.data, true) },
+                        onAttempt = { attempt, ok ->
+                            Log.i(
+                                IphoneCarPlayConfiguration.TAG,
+                                "claim iface=${function.data.id}/${function.data.alternateSetting}" +
+                                    " class=${function.data.interfaceClass} attempt=$attempt ok=$ok",
+                            )
+                        },
                     )
                     if (!dataClaimed) {
                         throw IphoneUsbException.DeviceUnavailable(
-                            "Android could not claim the NCM data interface ${function.data.id}",
+                            "Android could not claim the NCM data interface ${function.data.id} after ${CLAIM_ATTEMPTS} attempts",
                         )
                     }
                     claimed.add(function.data)
                 }
-                val altSelected = connection.setInterface(function.data)
-                Log.i(
-                    IphoneCarPlayConfiguration.TAG,
-                    "setInterface iface=${function.data.id}/${function.data.alternateSetting} ok=$altSelected",
+                val altSelected = selectDataAlternateSetting(
+                    select = { connection.setInterface(function.data) },
+                    reclaim = { connection.claimInterface(function.data, true) },
+                    onAttempt = { attempt, ok ->
+                        Log.i(
+                            IphoneCarPlayConfiguration.TAG,
+                            "setInterface iface=${function.data.id}/${function.data.alternateSetting}" +
+                                " attempt=$attempt ok=$ok",
+                        )
+                    },
                 )
                 if (!altSelected) {
                     throw IphoneUsbException.DeviceUnavailable(
