@@ -1,6 +1,7 @@
 package com.shilapi.xcertplay.network
 
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.util.Log
 import com.shilapi.xcertplay.transport.EthernetIpv6Codec
 import com.shilapi.xcertplay.transport.NcmUsbBridge
@@ -42,11 +43,17 @@ class Ipv6NcmBridge(
 
     fun start() {
         check(running.compareAndSet(false, true)) { "bridge is already started" }
-        ncmToTunThread = Thread(::runNcmToTun, "ncm-ipv6-in").apply {
+        ncmToTunThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+            runNcmToTun()
+        }, "ncm-ipv6-in").apply {
             isDaemon = true
             start()
         }
-        tunToNcmThread = Thread(::runTunToNcm, "ncm-ipv6-out").apply {
+        tunToNcmThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+            runTunToNcm()
+        }, "ncm-ipv6-out").apply {
             isDaemon = true
             start()
         }

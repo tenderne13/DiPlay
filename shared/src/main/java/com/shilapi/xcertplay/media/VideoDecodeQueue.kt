@@ -30,24 +30,40 @@ internal class VideoDecodeQueue(
 ) {
     private val jobs = LinkedBlockingQueue<VideoJob>()
 
+    // Incremental accounting: scanning the queue per frame was O(n) at frame rate.
+    private var frameCount = 0
+    private var frameBytes = 0L
+
     @Synchronized fun offer(job: VideoJob) {
         if (job is VideoJob.Frame) {
-            val frames = jobs.filterIsInstance<VideoJob.Frame>()
-            if (frames.size >= maxFrames || frames.sumOf { it.nalus.size.toLong() } + job.nalus.size > maxBytes) {
+            if (frameCount >= maxFrames || frameBytes + job.nalus.size > maxBytes) {
                 discardFrames()
                 jobs.offer(VideoJob.Resync)
             }
             // A single oversized frame is also a lost reference chain.
             if (job.nalus.size > maxBytes) return
+            frameCount += 1
+            frameBytes += job.nalus.size
         }
         jobs.offer(job)
     }
 
     @Synchronized fun discardFrames() {
         jobs.removeIf { it is VideoJob.Frame || it is VideoJob.Resync }
+        frameCount = 0
+        frameBytes = 0
     }
 
-    fun poll(timeoutMillis: Long): VideoJob? = jobs.poll(timeoutMillis, TimeUnit.MILLISECONDS)
+    fun poll(timeoutMillis: Long): VideoJob? {
+        val job = jobs.poll(timeoutMillis, TimeUnit.MILLISECONDS)
+        if (job is VideoJob.Frame) {
+            synchronized(this) {
+                frameCount = (frameCount - 1).coerceAtLeast(0)
+                frameBytes = (frameBytes - job.nalus.size).coerceAtLeast(0)
+            }
+        }
+        return job
+    }
 }
 
 /** Drain output while waiting for input: full output buffers can otherwise starve input forever. */

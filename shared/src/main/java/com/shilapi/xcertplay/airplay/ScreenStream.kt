@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.airplay
 
+import android.os.Process
 import android.util.Log
 import java.io.Closeable
 import java.io.InputStream
@@ -53,6 +54,7 @@ class ScreenStream(private val key: ByteArray, private val onDiagnostic: (String
     }
 
     private fun accept(bound: ServerSocket) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
         try {
             val accepted = bound.accept()
             socket = accepted

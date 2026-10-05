@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.airplay
 
+import android.os.Process
 import java.io.Closeable
 import java.io.IOException
 import java.net.DatagramPacket
@@ -64,7 +65,10 @@ class AudioStream(
         val control = bindAnyPort()
         dataSocket = data
         controlSocket = control
-        dataThread = Thread({ runData(data, listener) }, "airplay-audio-rx").apply {
+        dataThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            runData(data, listener)
+        }, "airplay-audio-rx").apply {
             isDaemon = true
             start()
         }

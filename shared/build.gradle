@@ -38,4 +38,6 @@ dependencies {
     implementation libs.jmdns
     testImplementation libs.junit
     testImplementation 'org.robolectric:robolectric:4.17'
+    // Lets JVM unit tests exercise the same Conscrypt ChaCha20-Poly1305 path as Android.
+    testImplementation 'org.conscrypt:conscrypt-openjdk-uber:2.6.2'
 }

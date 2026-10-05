@@ -13,12 +13,16 @@ import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /** BouncyCastle-backed primitives for the CarPlay pairing and control channel. */
 object AirPlayCrypto {
     private const val MAC_BITS = 128
     private const val NONCE_SIZE = 12
     private const val LABEL_SIZE = 8
+    private const val JCA_CHACHA_TRANSFORMATION = "ChaCha20/Poly1305/NoPadding"
     private val random = SecureRandom()
 
     data class X25519KeyPair(val privateKey: ByteArray, val publicKey: ByteArray)
@@ -78,13 +82,15 @@ object AirPlayCrypto {
         nonce: ByteArray,
         plaintext: ByteArray,
         aad: ByteArray = ByteArray(0),
-    ): ByteArray {
+    ): ByteArray = if (aeadEngine == AeadEngine.JCA) {
+        jcaChacha(Cipher.ENCRYPT_MODE, key, nonce, plaintext, aad)
+    } else {
         val cipher = ChaCha20Poly1305()
         cipher.init(true, AEADParameters(KeyParameter(key), MAC_BITS, nonce, aad))
         val output = ByteArray(cipher.getOutputSize(plaintext.size))
         val length = cipher.processBytes(plaintext, 0, plaintext.size, output, 0)
         cipher.doFinal(output, length)
-        return output
+        output
     }
 
     fun chachaOpen(
@@ -92,14 +98,60 @@ object AirPlayCrypto {
         nonce: ByteArray,
         ciphertextAndTag: ByteArray,
         aad: ByteArray = ByteArray(0),
-    ): ByteArray {
+    ): ByteArray = if (aeadEngine == AeadEngine.JCA) {
+        jcaChacha(Cipher.DECRYPT_MODE, key, nonce, ciphertextAndTag, aad)
+    } else {
         val cipher = ChaCha20Poly1305()
         cipher.init(false, AEADParameters(KeyParameter(key), MAC_BITS, nonce, aad))
         val output = ByteArray(cipher.getOutputSize(ciphertextAndTag.size))
         val processed = cipher.processBytes(ciphertextAndTag, 0, ciphertextAndTag.size, output, 0)
         val finalized = cipher.doFinal(output, processed)
         val outputLength = processed + finalized
-        return if (outputLength == output.size) output else output.copyOf(outputLength)
+        if (outputLength == output.size) output else output.copyOf(outputLength)
+    }
+
+    internal enum class AeadEngine { JCA, BOUNCY_CASTLE }
+
+    @Volatile
+    internal var aeadEngine: AeadEngine = detectAeadEngine()
+
+    /** True when ChaCha20-Poly1305 runs on the platform's native (Conscrypt/BoringSSL) code. */
+    val isAeadAccelerated: Boolean get() = aeadEngine == AeadEngine.JCA
+
+    internal fun redetectAeadEngine() {
+        aeadEngine = detectAeadEngine()
+    }
+
+    private fun detectAeadEngine(): AeadEngine =
+        if (runCatching { Cipher.getInstance(JCA_CHACHA_TRANSFORMATION) }.isSuccess) {
+            AeadEngine.JCA
+        } else {
+            AeadEngine.BOUNCY_CASTLE
+        }
+
+    // Video and audio streams each run on dedicated threads, so one cached Cipher per thread is safe.
+    // The cache is keyed by the AES key: Conscrypt rejects nonce reuse per (cipher, key), and streams
+    // guarantee unique counter nonces per key.
+    private class JcaChachaState(val key: ByteArray, val keySpec: SecretKeySpec, val cipher: Cipher)
+
+    private val jcaState = ThreadLocal<JcaChachaState>()
+
+    private fun jcaChacha(
+        mode: Int,
+        key: ByteArray,
+        nonce: ByteArray,
+        input: ByteArray,
+        aad: ByteArray,
+    ): ByteArray {
+        val state = jcaState.get()?.takeIf { it.key.contentEquals(key) }
+            ?: JcaChachaState(
+                key.copyOf(),
+                SecretKeySpec(key, "ChaCha20"),
+                Cipher.getInstance(JCA_CHACHA_TRANSFORMATION),
+            ).also { jcaState.set(it) }
+        state.cipher.init(mode, state.keySpec, IvParameterSpec(nonce))
+        if (aad.isNotEmpty()) state.cipher.updateAAD(aad)
+        return state.cipher.doFinal(input)
     }
 
     /** 12-byte nonce: four zero bytes followed by an eight-byte little-endian counter. */

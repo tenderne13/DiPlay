@@ -372,6 +372,17 @@ class CarPlayHostActivity : ComponentActivity() {
     private val airPlayCommandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val logLines = ArrayDeque<LogEntry>()
     private val expireOldLogLines = Runnable { refreshLogView(System.currentTimeMillis()) }
+    private val sessionLogExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "session-log-writer").apply { isDaemon = true }
+    }
+    private val coalescedLogRefresh = Runnable {
+        logRefreshPending = false
+        refreshLogView(System.currentTimeMillis())
+    }
+    @Volatile private var logRefreshPending = false
+    private val logTimestampFormat = object : ThreadLocal<SimpleDateFormat>() {
+        override fun initialValue(): SimpleDateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    }
     private val refreshTurnOverlay = object : Runnable {
         override fun run() {
             com.shilapi.xcertplay.hud.BydNavigationOutputs.refreshTurnOverlay()
@@ -923,6 +934,7 @@ class CarPlayHostActivity : ComponentActivity() {
         dismissClusterPresentation()
         mainHandler.removeCallbacks(applyDisplaySize)
         mainHandler.removeCallbacks(expireOldLogLines)
+        mainHandler.removeCallbacks(coalescedLogRefresh)
         mainHandler.removeCallbacks(pollConfiguration)
         currentSurface?.let { surface ->
             sink?.clearSurface(SCREEN_TYPE_MAIN, surface)
@@ -931,9 +943,13 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         currentSurface = null
         currentSurfaceTexture = null
-        sessionLog?.append("Activity destroyed")
-        sessionLog?.close()
+        val logToClose = sessionLog
         sessionLog = null
+        sessionLogExecutor.execute {
+            logToClose?.append("Activity destroyed")
+            logToClose?.close()
+            sessionLogExecutor.shutdown()
+        }
         super.onDestroy()
     }
 
@@ -3891,31 +3907,39 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun appendLog(message: String) {
         val safe = DiagnosticRedactor.redact(message) ?: return
         val line = formattedLogLine(safe, System.currentTimeMillis())
-        sessionLog?.append(line)
+        // Late lines from a dying controller can arrive after onDestroy shut the writer down.
+        runCatching { sessionLogExecutor.execute { sessionLog?.append(line) } }
         runOnUiThread {
             logLines.addLast(LogEntry(System.currentTimeMillis(), line))
-            refreshLogView(System.currentTimeMillis())
+            while (logLines.size > MAX_LOG_LINES) logLines.removeFirst()
+            if (!logRefreshPending) {
+                logRefreshPending = true
+                mainHandler.postDelayed(coalescedLogRefresh, LOG_VIEW_REFRESH_MILLIS)
+            }
         }
     }
 
     private fun appendFileLog(message: String) {
-        sessionLog?.append(formattedLogLine(message, System.currentTimeMillis()))
+        val line = formattedLogLine(message, System.currentTimeMillis())
+        runCatching { sessionLogExecutor.execute { sessionLog?.append(line) } }
     }
 
     private fun formattedLogLine(message: String, nowMillis: Long): String =
-        "${SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(nowMillis))}  $message"
+        "${logTimestampFormat.get()!!.format(Date(nowMillis))}  $message"
 
     private fun initializeSessionLog() {
         val logFile = File(File(filesDir, "logs"), "diplay.log")
         val activeLog = SessionLogFile(logFile)
-        runCatching {
-            activeLog.reset(
-                "DiPlay log started " +
-                    "${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())} " +
-                    "pid=${Process.myPid()} path=${logFile.absolutePath}",
-            )
-        }
         sessionLog = activeLog
+        sessionLogExecutor.execute {
+            runCatching {
+                activeLog.reset(
+                    "DiPlay log started " +
+                        "${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())} " +
+                        "pid=${Process.myPid()} path=${logFile.absolutePath}",
+                )
+            }
+        }
     }
 
     private fun refreshLogView(nowMillis: Long) {
@@ -3994,6 +4018,8 @@ class CarPlayHostActivity : ComponentActivity() {
         const val SCREEN_TYPE_ALT = 111
         private const val CENTER_MAP_IDLE_MILLIS = 3_000L // a reconnect is quicker; a session end is not
         const val LOG_RETENTION_MILLIS = 5 * 60_000L
+        const val LOG_VIEW_REFRESH_MILLIS = 200L
+        const val MAX_LOG_LINES = 150
         const val DISPLAY_CHANGE_DEBOUNCE_MILLIS = 500L
         const val CONFIGURATION_POLL_INTERVAL_MILLIS = 2_000L
         const val RECONNECT_DELAY_MILLIS = 2_000L
