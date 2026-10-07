@@ -133,7 +133,7 @@ adb devices
 
 ## 七、其他要点
 
-- **git 状态**：已全部提交并推送到 fork（origin=tenderne13/DiPlay）。main = `b47d783`（批次 A `21fb2c6` + 比亚迪支持 `b47d783`）；**给上游提 PR 用 `perf/low-end-head-units` 分支（仅含批次 A，未推送）**。
+- **git 状态**：已全部提交并推送到 fork（origin=tenderne13/DiPlay）。**main = 已合并上游 v0.2.13（380 提交，含 smooth video、saveWithoutPicker 报告导出+应用内查看、上游自己的原生 ChaCha20 实现）**，我们的改动：批次 A 的 A2/A3（A1 解密已被上游官方实现取代而丢弃）、比亚迪支持、公共 Downloads 报告导出。仓库不再跟踪打包好的 APK（U 盘安装流程取代）。**给上游提 PR 用 `perf/low-end-head-units` 分支（已 rebase 到上游最新，仅含 A2 日志面板 + A3 队列/线程优先级，commit 1332e4d，已推送）**。
 - 仓库 remote 是 fork `tenderne13/DiPlay`，上游 `shihabal3amri/DiPlay`；`gh` CLI 未安装，查上游 issue 用 `https://api.github.com/...`（WebFetch 可用）。
 - 用户手机（Redmi，adb 调试）与车机（无 ADB）是两台设备，勿混淆。
 - 用户在国内网络环境，构建下载类命令注意重试；细节见用户记忆 `user-dev-environment.md`。
