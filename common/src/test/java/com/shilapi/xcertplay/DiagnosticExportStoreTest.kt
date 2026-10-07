@@ -82,39 +82,12 @@ class DiagnosticExportStoreTest {
 
     @Test
     @Config(sdk = [28], manifest = Config.NONE)
-    fun android9SavesUtf8ReportIntoAppExternalDiPlayDirectory() {
-        val context = RuntimeEnvironment.getApplication()
-        val report = "DiPlay · diagnostic report\n无线: 多播不通\n"
-        val saved = DiagnosticExportStore.saveToAppStorage(context, "DiPlay-test.txt", report)
-        assertEquals(report, saved.readText())
-        assertEquals("DiPlay", saved.parentFile!!.name)
-        assertEquals(context.getExternalFilesDir(null)!!.absolutePath, saved.parentFile!!.parentFile!!.absolutePath)
-    }
-
-    @Test
-    @Config(sdk = [28], manifest = Config.NONE)
-    fun appStorageFailurePropagatesAndKeepsTheBlockingFileUntouched() {
-        val context = RuntimeEnvironment.getApplication()
-        val base = context.getExternalFilesDir(null)!!
-        base.mkdirs()
-        val blocker = File(base, "DiPlay")
-        blocker.createNewFile()
-        blocker.writeText("not a directory")
-        assertThrows(IOException::class.java) {
-            DiagnosticExportStore.saveToAppStorage(context, "DiPlay-test.txt", "report")
-        }
-        assertEquals("not a directory", blocker.readText())
-        assertFalse(File(base, "DiPlay/DiPlay-test.txt").exists())
-    }
-
-    @Test
-    @Config(sdk = [28], manifest = Config.NONE)
     fun android9SavesReportIntoPublicDownloadsDiPlayDirectory() {
         val report = "DiPlay · diagnostic report\n音乐: 欠载 0\n"
         val saved = DiagnosticExportStore.saveToPublicDownloads("DiPlay-test.txt", report)
-        assertEquals(report, saved.readText())
-        assertEquals("DiPlay", saved.parentFile!!.name)
-        assertEquals(Environment.DIRECTORY_DOWNLOADS, saved.parentFile!!.parentFile!!.name)
+        assertEquals(report, File(saved.savedPath!!).readText())
+        assertEquals("DiPlay", File(saved.savedPath).parentFile!!.name)
+        assertEquals(Environment.DIRECTORY_DOWNLOADS, File(saved.savedPath).parentFile!!.parentFile!!.name)
     }
 
     @Test

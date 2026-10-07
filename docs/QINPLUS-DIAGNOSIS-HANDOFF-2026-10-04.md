@@ -114,7 +114,9 @@ scripts/push-apk.sh [路径] [-i]
 
 # 复制 APK 到 U 盘（文件名自动带包时间戳，如 diplay-hudtest-20261004-2219.apk；缺省目标 /Volumes/HIKSEMI）
 scripts/copy-apk-to-usb.sh
-# U 盘若以只读挂载（FAT 脏标记，常见于热插拔后）：diskutil unmount /Volumes/HIKSEMI && diskutil mount disk4s1
+# U 盘只读挂载（FAT 脏标记，热插拔后常见）已由 LaunchAgent com.shilapi.usb-remount 自动重挂载（2026-10-07 起）；
+# 手动兜底：diskutil unmount /Volumes/HIKSEMI && diskutil mount disk4s1
+# 排查服务：launchctl list | grep usb-remount；日志：/tmp/usb-remount.log
 
 # adb（已加入 ~/.zshrc PATH；设备序列号 6hx8xsofr4jzu4vo，adb 授权容易掉线）
 adb devices

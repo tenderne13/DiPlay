@@ -8,11 +8,63 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.annotation.RequiresApi
+import androidx.core.content.FileProvider
 import java.io.File
 import java.io.IOException
 
 /** Saves an app-owned report without depending on an OEM's document-picker activity. */
 internal object DiagnosticExportStore {
+    data class SavedReport(
+        val uri: Uri,
+        val savedInApp: Boolean = false,
+        val savedPath: String? = null,
+    )
+
+    /** Android 9 and OEMs without working Downloads storage can still export privately. */
+    fun saveWithoutPicker(context: Context, fileName: String, report: String): SavedReport {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                return SavedReport(saveToDownloads(context.contentResolver, fileName, report))
+            } catch (_: Exception) {
+                // Preserve the report even when the OEM's public storage provider is absent.
+            }
+        }
+        try {
+            // Use Android's package-specific directory, including debug application IDs.
+            // No storage permission or document-picker activity is needed.
+            val externalFiles = context.getExternalFilesDir(null)
+            if (externalFiles != null) {
+                return saveInDirectory(context, File(externalFiles, "diagnostic-reports"), fileName, report)
+            }
+        } catch (_: Exception) {
+            // A missing, read-only or full external volume must not prevent export.
+        }
+        return saveInDirectory(context, File(context.filesDir, "diagnostic-reports"), fileName, report, savedInApp = true)
+    }
+
+    private fun saveInDirectory(
+        context: Context,
+        directory: File,
+        fileName: String,
+        report: String,
+        savedInApp: Boolean = false,
+    ): SavedReport {
+        if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Report storage is unavailable")
+        // Each export has a new URI: an earlier share grant cannot read a later report.
+        val file = File.createTempFile(fileName.removeSuffix(".txt") + "-", ".txt", directory)
+        try {
+            file.writeText(report, Charsets.UTF_8)
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.diagnostic-reports", file)
+            // Retain only the newest eight reports; never prune the export being returned.
+            directory.listFiles()?.filter { it != file && it.isFile }
+                ?.sortedByDescending { it.lastModified() }?.drop(7)?.forEach { it.delete() }
+            return SavedReport(uri, savedInApp = savedInApp, savedPath = if (savedInApp) null else file.absolutePath)
+        } catch (error: Exception) {
+            file.delete()
+            throw error
+        }
+    }
+
     @RequiresApi(Build.VERSION_CODES.Q)
     fun saveToDownloads(resolver: ContentResolver, fileName: String, report: String): Uri {
         val values = ContentValues().apply {
@@ -44,33 +96,22 @@ internal object DiagnosticExportStore {
     }
 
     /**
-     * Pre-Android 10 path for head units without a document picker: the app-specific
-     * external directory needs no permission, but some OEM file managers cannot reach it.
-     */
-    fun saveToAppStorage(context: Context, fileName: String, report: String): File {
-        val base = context.getExternalFilesDir(null)
-            ?: throw IOException("External app storage is unavailable")
-        return saveToDirectory(base, fileName, report)
-    }
-
-    /**
-     * Pre-Android 10 path reachable by any file manager. Requires WRITE_EXTERNAL_STORAGE,
-     * which the app only requests on API 28 and below.
+     * Pre-Android 10 path reachable by any OEM file manager: some builds cannot browse
+     * Android/data at all. Requires WRITE_EXTERNAL_STORAGE, only requested on API 28 and
+     * below. The file:// URI is deliberate: sharing it throws on modern targets, and the
+     * caller falls back to the in-app report viewer.
      */
     @Suppress("DEPRECATION")
-    fun saveToPublicDownloads(fileName: String, report: String): File =
-        saveToDirectory(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName, report)
-
-    private fun saveToDirectory(base: File, fileName: String, report: String): File {
-        val dir = File(base, "DiPlay")
-        if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Could not create ${dir.absolutePath}")
-        val target = File(dir, fileName)
+    fun saveToPublicDownloads(fileName: String, report: String): SavedReport {
+        val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "DiPlay")
+        if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Public Downloads is unavailable")
+        val file = File(directory, fileName)
         try {
-            target.writeText(report, Charsets.UTF_8)
+            file.writeText(report, Charsets.UTF_8)
         } catch (error: Exception) {
-            runCatching { target.delete() }
+            file.delete()
             throw error
         }
-        return target
+        return SavedReport(Uri.fromFile(file), savedPath = file.absolutePath)
     }
 }

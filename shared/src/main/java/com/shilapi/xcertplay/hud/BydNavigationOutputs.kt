@@ -7,9 +7,14 @@ import com.shilapi.xcertplay.iap2.wire.Iap2Frame
 object BydNavigationOutputs {
     /** Recover a journaled interrupted output when the app opens, even before a phone reconnects. */
     fun onAppOpened(context: Context) {
+        BydOemClusterNavi.restoreIfNeeded(context)
+        BydDiLink3ClusterOutput.restoreIfNeeded(context)
+        com.shilapi.xcertplay.network.WifiScanPause.restoreIfNeeded(context)
         if (BydStandaloneHudOutput.available(context)) start(context)
         // Read the battery early, so a reading is ready when CarPlay identifies (see batteryStatus).
         if (BydOutputSettings.batteryToIphoneActive(context)) BydBatteryStatus.start(context)
+        // DiLink 3 creates its cluster map display only once the cluster has projected.
+        if (BydOutputSettings.enabled(context)) BydClusterBridge.prepareProjectionDisplay(context.applicationContext)
     }
     fun setDiagnosticHold(hold: Boolean) { BydStandaloneHudOutput.syntheticHold = hold }
     @Volatile private var useStandalone = false
@@ -19,13 +24,17 @@ object BydNavigationOutputs {
     private val overlayRoute = BydHudRouteState(
         staleRouteNs = 120_000_000_000L,
         emptyListHideNs = 8_000_000_000L,
+        keepAcrossNoRoute = true,
     )
     private val standalone = NavigationOutputWorker("diplay-standalone-output", BydStandaloneNavigationBridge::clear)
     private val hud = NavigationOutputWorker("diplay-hud-output", BydHudBridge::clear)
     private val cluster = NavigationOutputWorker("diplay-cluster-output", BydClusterBridge::clear)
 
     /** The host reports whether its CarPlay map window is on the cluster (see [BydClusterMapPause]). */
-    fun setClusterMapShown(shown: Boolean) { BydClusterMapPause.clusterMapShown = shown }
+    fun setClusterMapShown(shown: Boolean) {
+        BydClusterMapPause.clusterMapShown = shown
+        BydClusterBridge.setMapShown(shown)
+    }
 
     /** The running CarPlay session: told every second whether the cluster currently shows the map. */
     fun setClusterStreamControl(control: (Boolean) -> Unit) { BydClusterMapPause.streamControl = control }
@@ -57,11 +66,16 @@ object BydNavigationOutputs {
         }
         BydClusterMapPause.initialize(app)
         BydClusterSong.attach(app)
+        BydCarPlayCall.attach(app)
     }
 
     internal fun onFrame(frame: Iap2Frame) {
         if (frame.messageId == ClusterSongState.NOW_PLAYING_UPDATE) {
             BydClusterSong.onFrame(frame)
+            return
+        }
+        if (frame.messageId == CarPlayCallState.CALL_STATE_UPDATE) {
+            BydCarPlayCall.onFrame(frame)
             return
         }
         if (frame.messageId != BydHudRouteState.ROUTE_GUIDANCE_UPDATE &&
@@ -100,16 +114,38 @@ object BydNavigationOutputs {
     }
 
     private fun currentOverlay(): ClusterTurnGuidance? = synchronized(overlayLock) {
-        overlayRoute.currentApple()?.let { ClusterTurnGuidance.from(BydClusterFrame.from(it)) }
+        overlayRoute.currentApple()?.let { apple ->
+            ClusterTurnGuidance.from(BydClusterFrame.from(apple)).copy(
+                arrivalEpochSeconds = apple.arrivalEpochSeconds,
+                remainingSeconds = apple.remainingSeconds,
+                remainingMeters = apple.remainingMeters,
+            )
+        }
     }
 
     /** The dashboard song setting changed; applies at once. */
     fun clusterSongChanged(enabled: Boolean) = BydClusterSong.settingChanged(enabled)
 
+    /** The CarPlay call setting changed; applies at once. */
+    fun carPlayCallsChanged(enabled: Boolean) = BydCarPlayCall.settingChanged(enabled)
+
+    /** The iPhone's current call, for the steering wheel's call keys. */
+    fun carPlayCall(): CarPlayCallCard? = BydCarPlayCall.current()
+
+    /** The dashboard song's "only when it changes" setting changed; applies at once. */
+    fun clusterSongOnChangeChanged() = BydClusterSong.onChangeSettingChanged()
+
+    /** A short note where the song shows on the dashboard; needs the same ADB access as the song. */
+    fun dashboardNote(text: String, source: Int? = null) = BydClusterSong.note(text, source)
+
     /** Best effort while alive; Android does not guarantee callbacks before force-stop. */
-    fun endNow() {
-        standalone.clear(); hud.clear(); cluster.clear(); BydClusterSong.end()
-        synchronized(overlayLock) { overlayRoute.clear() }
-        refreshTurnOverlay()
+    fun endNow(preserveTurnOverlay: Boolean = false) {
+        standalone.clear(); hud.clear(); cluster.clear(); BydClusterSong.end(); BydCarPlayCall.end()
+        // Only a wireless session replacement retains the card. Explicit controller close
+        // and wired disconnect still clear it immediately.
+        if (!preserveTurnOverlay) {
+            synchronized(overlayLock) { overlayRoute.clear() }
+            refreshTurnOverlay()
+        }
     }
 }

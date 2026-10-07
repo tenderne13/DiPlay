@@ -7,9 +7,12 @@ import android.view.KeyEvent
 import com.shilapi.xcertplay.airplay.CarPlayMediaButton
 import com.shilapi.xcertplay.media.CarPlayNowPlaying
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -38,6 +41,20 @@ class CarPlayMediaCallbackTest {
         press(CarPlayMediaButton.KEYCODE_BYD_AUTO_MEDIA_PLAY_PAUSE)
 
         assertEquals(List(3) { CarPlayMediaButton.PLAY_PAUSE }, sent)
+    }
+
+    @Test fun experimentalPlayPauseKeyNeedsOptInAndStopsAfterDisable() {
+        var enabled = false
+        val experimental = CarPlayMediaCallback(experimentalDiLink3Keys = { enabled }) { index, _ -> sent += index }
+        val key = button(KeyEvent(0, 0, KeyEvent.ACTION_DOWN, 331, 0))
+        experimental.onMediaButtonEvent(key)
+        assertEquals(emptyList<Int>(), sent)
+        enabled = true
+        experimental.onMediaButtonEvent(key)
+        assertEquals(listOf(CarPlayMediaButton.PLAY_PAUSE), sent)
+        enabled = false
+        experimental.onMediaButtonEvent(key)
+        assertEquals(listOf(CarPlayMediaButton.PLAY_PAUSE), sent)
     }
 
     @Test
@@ -71,6 +88,25 @@ class CarPlayMediaCallbackTest {
         assertEquals(257_000, metadata.getLong(MediaMetadata.METADATA_KEY_DURATION))
         assertEquals(artwork, metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART))
         assertEquals(artwork, metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON))
+    }
+
+    @Test
+    fun aPendingArtworkTransferKeepsThePreviousArt() {
+        val previous = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        val cached = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+
+        assertSame(previous, CarPlayMediaKeys.nextArtwork(7, emptyMap(), previous))
+        assertSame(cached, CarPlayMediaKeys.nextArtwork(7, mapOf(7 to cached), previous))
+        assertNull(CarPlayMediaKeys.nextArtwork(7, mapOf(7 to null), previous))
+        assertNull(CarPlayMediaKeys.nextArtwork(null, mapOf(7 to cached), previous))
+    }
+
+    @Test
+    fun thePlaceholderRastersAtArtworkSize() {
+        val placeholder = CarPlayMediaKeys.placeholderArt(RuntimeEnvironment.getApplication())
+
+        assertEquals(384, placeholder?.width)
+        assertEquals(384, placeholder?.height)
     }
 
     private fun press(keyCode: Int, repeat: Int = 0) {
