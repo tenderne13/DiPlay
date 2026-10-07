@@ -10,6 +10,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Build
+import android.os.Process
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -768,6 +769,7 @@ private class VideoDecoder(
     }
 
     private fun run() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
         try {
             while (running) {
                 val job = queue.poll(5)
@@ -1290,6 +1292,7 @@ private class AudioRenderer(
     }
 
     private fun run() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         try {
             runCatching { report("Audio: starting api=${Build.VERSION.SDK_INT} " +
                 "audioType=${format.audioType} codec=${format.codec} rate=${format.sampleRate} channels=${format.channels} " +

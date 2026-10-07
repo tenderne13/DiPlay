@@ -45,6 +45,32 @@ class VideoDecodeQueueTest {
         assertNull(queue.poll(0))
     }
 
+    @Test fun byteBudgetIsReleasedAsFramesAreConsumed() {
+        val queue = VideoDecodeQueue(maxFrames = 8, maxBytes = 10)
+        queue.offer(VideoJob.Frame(ByteArray(4)))
+        queue.offer(VideoJob.Frame(ByteArray(4)))
+        queue.poll(0)
+        queue.poll(0)
+        // The drained bytes no longer count: two more 4-byte frames fit without recovery.
+        queue.offer(VideoJob.Frame(ByteArray(4)))
+        queue.offer(VideoJob.Frame(ByteArray(4)))
+        assertEquals(4, (queue.poll(0) as VideoJob.Frame).nalus.size)
+        assertEquals(4, (queue.poll(0) as VideoJob.Frame).nalus.size)
+        assertNull(queue.poll(0))
+    }
+
+    @Test fun discardFramesReleasesTheByteBudget() {
+        val queue = VideoDecodeQueue(maxFrames = 8, maxBytes = 10)
+        queue.offer(VideoJob.Frame(ByteArray(4)))
+        queue.offer(VideoJob.Frame(ByteArray(4)))
+        queue.discardFrames()
+        queue.offer(VideoJob.Frame(ByteArray(4)))
+        queue.offer(VideoJob.Frame(ByteArray(4)))
+        assertEquals(4, (queue.poll(0) as VideoJob.Frame).nalus.size)
+        assertEquals(4, (queue.poll(0) as VideoJob.Frame).nalus.size)
+        assertNull(queue.poll(0))
+    }
+
     @Test fun fullOutputMustBeDrainedWhileRetryingTheSameInput() {
         var heldOutputs = 2
         var dequeues = 0

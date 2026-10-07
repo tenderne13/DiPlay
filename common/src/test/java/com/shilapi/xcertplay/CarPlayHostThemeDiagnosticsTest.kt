@@ -27,12 +27,16 @@ class CarPlayHostThemeDiagnosticsTest {
     private lateinit var activity: CarPlayHostActivity
     private lateinit var logFile: File
     private lateinit var commands: PausedExecutorService
+    private lateinit var logWrites: PausedExecutorService
 
     @Before fun setUp() {
         activity = Robolectric.buildActivity(CarPlayHostActivity::class.java).get()
         (getField("airPlayCommandExecutor") as ExecutorService).shutdownNow()
         commands = PausedExecutorService()
         setField("airPlayCommandExecutor", commands)
+        (getField("sessionLogExecutor") as ExecutorService).shutdownNow()
+        logWrites = PausedExecutorService()
+        setField("sessionLogExecutor", logWrites)
         logFile = folder.newFile("diplay.log")
         setField("sessionLog", SessionLogFile(logFile))
         setField("darkMode", true)
@@ -41,6 +45,7 @@ class CarPlayHostThemeDiagnosticsTest {
 
     @After fun tearDown() {
         commands.shutdownNow()
+        logWrites.shutdownNow()
         (getField("teardownExecutor") as ExecutorService).shutdownNow()
         (getField("sessionLog") as SessionLogFile).close()
     }
@@ -48,6 +53,7 @@ class CarPlayHostThemeDiagnosticsTest {
     @Test fun undefinedSignalKeepsThePreviousModeAndIsRecordedWithoutASend() {
         refresh(Configuration.UI_MODE_TYPE_CAR, ThemeModeDiagnostics.Source.POLL)
         commands.runAll()
+        logWrites.runAll()
 
         assertEquals(true, getField("darkMode"))
         assertTrue(logFile.readText().contains("reported=undefined applied=dark sessionActive=false"))
@@ -61,6 +67,7 @@ class CarPlayHostThemeDiagnosticsTest {
         commands.runAll()
         refresh(Configuration.UI_MODE_NIGHT_NO, ThemeModeDiagnostics.Source.POLL)
         commands.runAll()
+        logWrites.runAll()
 
         assertEquals(false, getField("darkMode"))
         verify(session, times(1)).setNightMode(false)
@@ -80,6 +87,7 @@ class CarPlayHostThemeDiagnosticsTest {
         refresh(Configuration.UI_MODE_NIGHT_NO, ThemeModeDiagnostics.Source.CALLBACK)
         refresh(Configuration.UI_MODE_NIGHT_YES, ThemeModeDiagnostics.Source.CALLBACK)
         commands.runAll()
+        logWrites.runAll()
         assertEquals(false, getField("darkMode"))
         verify(session, times(1)).setNightMode(false)
         verify(session, times(0)).setNightMode(true)
